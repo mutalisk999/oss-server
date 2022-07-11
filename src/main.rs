@@ -3,10 +3,12 @@ use std::net::SocketAddr;
 use flexi_logger::{detailed_format, Duplicate};
 use log::info;
 use tokio::signal;
+use dotenv::dotenv;
 
 use crate::router::register_router;
 
 mod router;
+mod controller;
 
 fn init_log() {
     flexi_logger::Logger::with_str("debug")
@@ -65,6 +67,8 @@ async fn shutdown_signal() {
 async fn main() {
     // init log
     init_log();
+
+    dotenv().ok();
 
     // run it
     let listen_addr_str = "0.0.0.0:3000";

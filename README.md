@@ -1,2 +1,2 @@
 # oss-server
-oss server powered by axum and leveldb-rs
+oss server powered by axum and wickdb

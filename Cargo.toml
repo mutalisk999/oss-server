@@ -8,5 +8,7 @@ edition = "2018"
 [dependencies]
 axum = "0.5.11"
 tokio = { version = "1.15.0", features = ["full"] }
+wickdb = { git = "https://github.com/Fullstop000/wickdb", branch = "master" }
+dotenv = "0.15.0"
 flexi_logger = "0.17"
 log = "0.4.14"
