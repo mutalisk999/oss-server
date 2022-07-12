@@ -2,7 +2,7 @@ use std::env;
 use std::sync::Arc;
 use axum::{Extension, Router};
 use axum::extract::{ContentLengthLimit, Path};
-use axum::http::{header::{HeaderMap, HeaderName}, StatusCode};
+use axum::http::{header::{HeaderMap, HeaderName, HeaderValue}, StatusCode};
 use axum::routing::{get, post};
 use tokio::sync::RwLock;
 use wickdb::{BytewiseComparator, Options, WickDB, ReadOptions, DB, WriteOptions};
@@ -60,7 +60,43 @@ pub fn oss_routes() -> Router {
 
 
 async fn get_record_by_key(Path(key): Path<String>,
-                           Extension(state): Extension<SharedState>) {}
+                           Extension(state): Extension<SharedState>) -> Result<(HeaderMap, Bytes), StatusCode> {
+    let mut headers = HeaderMap::new();
+    let r = hex::decode(key.as_str());
+    if r.is_err() {
+        // invalid hex string
+        let resp_err = RespErr::new(-1, Some(String::from("invalid hex string [record key]")));
+        let json_resp = serde_json::to_string(&resp_err).unwrap();
+        return Ok((headers, Bytes::from(json_resp)));
+    }
+
+    let r = state.read().await.db.as_ref().unwrap()
+        .get(ReadOptions::default(), r.unwrap().as_slice());
+    if r.is_err() {
+        // get error
+        let resp_err = RespErr::new(-1, Some(String::from("get error [record key]")));
+        let json_resp = serde_json::to_string(&resp_err).unwrap();
+        return Ok((headers, Bytes::from(json_resp)));
+    } else if r.as_ref().unwrap().is_none() {
+        // not found in store
+        let resp_err = RespErr::new(-1, Some(String::from("not found [record key]")));
+        let json_resp = serde_json::to_string(&resp_err).unwrap();
+        return Ok((headers, Bytes::from(json_resp)));
+    }
+
+    let record_store: OssRecordStore = bson::from_slice(r.unwrap().unwrap().as_slice()).unwrap();
+    headers.insert(
+        HeaderName::from_static("record-origin-name"),
+        HeaderValue::from_str(record_store.origin_name.unwrap_or(String::default()).as_str())
+            .unwrap(),
+    );
+    headers.insert(
+        HeaderName::from_static("record-origin-type"),
+        HeaderValue::from_str(record_store.origin_type.unwrap_or(String::default()).as_str())
+            .unwrap(),
+    );
+    return Ok((headers, Bytes::from(record_store.content_data.unwrap())));
+}
 
 
 async fn store_record(headers: HeaderMap,
@@ -105,8 +141,20 @@ async fn store_record(headers: HeaderMap,
     let r = state.read().await.db.as_ref().unwrap()
         .get(ReadOptions::default(), bson_rec_md5.as_ref());
     if r.is_err() {
-        state.write().await.db.as_ref().unwrap()
-            .put(WriteOptions::default(), bson_rec_md5.as_ref(), bson_rec.as_str().unwrap().as_bytes()).unwrap();
+        // get error
+        let resp_err = RespErr::new(-1, Some(String::from("get error")));
+        let json_resp = serde_json::to_string(&resp_err).unwrap();
+        return Ok(Bytes::from(json_resp));
+    } else if r.unwrap().is_none() {
+        // not found in store
+        let r = state.write().await.db.as_ref().unwrap()
+            .put(WriteOptions::default(), bson_rec_md5.as_ref(), bson_rec.as_str().unwrap().as_bytes());
+        if r.is_err() {
+            // put error
+            let resp_err = RespErr::new(-1, Some(String::from("put error")));
+            let json_resp = serde_json::to_string(&resp_err).unwrap();
+            return Ok(Bytes::from(json_resp));
+        }
     }
     let resp_ok = Resp::new(0, Some(format!("{:x}", bson_rec_md5).to_string()));
     let json_resp = serde_json::to_string(&resp_ok).unwrap();
