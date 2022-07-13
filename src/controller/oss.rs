@@ -8,10 +8,11 @@ use tokio::sync::RwLock;
 use wickdb::{BytewiseComparator, Options, WickDB, ReadOptions, DB, WriteOptions};
 use wickdb::file::FileStorage;
 use bytes::Bytes;
-use md5;
 use serde::{Deserialize, Serialize};
-use crate::controller::resp::{Resp, RespErr};
+use md5;
 use bincode;
+
+use crate::controller::resp::{Resp, RespErr};
 
 
 pub type SharedState = Arc<RwLock<State>>;
@@ -42,15 +43,18 @@ impl OssRecordStore {
 pub fn oss_routes() -> Router {
     // new leveldb state
     let opt = Options::<BytewiseComparator>::default();
-    let state = Arc::new(RwLock::new(
-        State {
-            db: Option::from(
-                WickDB::open_db(opt,
-                                env::var("OSS_STORE_DIR").unwrap_or(String::from("oss_store")),
-                                FileStorage::default())
-                    .unwrap()),
-        }
-    ));
+    let state = Arc::new(
+        RwLock::new(
+            State {
+                db: Option::from(
+                    WickDB::open_db(
+                        opt,
+                        env::var("OSS_STORE_DIR").unwrap_or(String::from("oss_store")),
+                        FileStorage::default(),
+                    ).unwrap()),
+            }
+        )
+    );
 
     Router::new()
         .route("/record/:key", get(get_record_by_key))
@@ -62,43 +66,74 @@ pub fn oss_routes() -> Router {
 async fn get_record_by_key(Path(key): Path<String>,
                            Extension(state): Extension<SharedState>) -> Result<(HeaderMap, Bytes), StatusCode> {
     let mut headers = HeaderMap::new();
-    let rec_bin_md5 = hex::decode(key.as_str());
+    let rec_bin_md5 = hex::decode(&key.as_str());
+
     if rec_bin_md5.is_err() {
         // invalid hex string
-        let resp_err = RespErr::new(-1,
-                                    Some(String::from("invalid hex string [record key]")));
-        let json_resp = serde_json::to_string(&resp_err).unwrap();
+        let resp_err = RespErr::new(
+            -1,
+            Some(String::from("invalid hex string [record key]")),
+        );
+        let json_resp = serde_json::to_string(&resp_err)
+            .unwrap();
+
         return Ok((headers, Bytes::from(json_resp)));
     }
 
-    let rec_bin_vec = state.read().await.db.as_ref().unwrap()
-        .get(ReadOptions::default(), rec_bin_md5.unwrap().as_slice());
-    if rec_bin_vec.is_err() {
+    let rec_bin_vec = state.read()
+        .await
+        .db
+        .as_ref()
+        .unwrap()
+        .get(
+            ReadOptions::default(),
+            &rec_bin_md5.unwrap().as_slice(),
+        );
+
+    if rec_bin_vec
+        .is_err() {
         // get error
-        let resp_err = RespErr::new(-1,
-                                    Some(String::from("get error [record key]")));
-        let json_resp = serde_json::to_string(&resp_err).unwrap();
+        let resp_err = RespErr::new(
+            -1,
+            Some(String::from("get error [record key]")),
+        );
+        let json_resp = serde_json::to_string(&resp_err)
+            .unwrap();
+
         return Ok((headers, Bytes::from(json_resp)));
-    } else if rec_bin_vec.as_ref().unwrap().is_none() {
+    } else if rec_bin_vec
+        .as_ref()
+        .unwrap()
+        .is_none() {
         // not found in store
-        let resp_err = RespErr::new(-1,
-                                    Some(String::from("not found [record key]")));
-        let json_resp = serde_json::to_string(&resp_err).unwrap();
+        let resp_err = RespErr::new(
+            -1,
+            Some(String::from("not found [record key]")),
+        );
+        let json_resp = serde_json::to_string(&resp_err)
+            .unwrap();
+
         return Ok((headers, Bytes::from(json_resp)));
     }
 
     let record_store: OssRecordStore = bincode::deserialize(
-        rec_bin_vec.unwrap().unwrap().as_slice()).unwrap();
+        &rec_bin_vec
+            .unwrap()
+            .unwrap()
+            .as_slice()
+    ).unwrap();
 
     headers.insert(
         HeaderName::from_static("record-origin-name"),
-        HeaderValue::from_str(record_store.origin_name
+        HeaderValue::from_str(&record_store
+            .origin_name
             .unwrap_or(String::default()).as_str())
             .unwrap(),
     );
     headers.insert(
         HeaderName::from_static("record-origin-type"),
-        HeaderValue::from_str(record_store.origin_type
+        HeaderValue::from_str(&record_store
+            .origin_type
             .unwrap_or(String::default()).as_str())
             .unwrap(),
     );
@@ -120,54 +155,106 @@ async fn store_record(headers: HeaderMap,
 
     if rec_content_length > 100 * 1024 * 1024 {
         // size too big
-        let resp_err = RespErr::new(-1,
-                                    Some(String::from("invalid stored record [size is too big]")));
-        let json_resp = serde_json::to_string(&resp_err).unwrap();
+        let resp_err = RespErr::new(
+            -1,
+            Some(String::from("invalid stored record [size is too big]")),
+        );
+        let json_resp = serde_json::to_string(&resp_err)
+            .unwrap();
+
         return Ok(Bytes::from(json_resp));
     } else if rec_content_length == 0 {
         // size too small
-        let resp_err = RespErr::new(-1,
-                                    Some(String::from("invalid stored record [size is too small]")));
-        let json_resp = serde_json::to_string(&resp_err).unwrap();
+        let resp_err = RespErr::new(
+            -1,
+            Some(String::from("invalid stored record [size is too small]")),
+        );
+        let json_resp = serde_json::to_string(&resp_err)
+            .unwrap();
+
         return Ok(Bytes::from(json_resp));
     }
 
     let mut rec_origin_name: Option<String> = None;
     let mut rec_origin_type: Option<String> = None;
-    let r = headers.get(HeaderName::from_static("record-origin-name"));
-    if r.is_some() {
-        rec_origin_name = Some(String::from(r.unwrap().to_str().unwrap()));
-    }
-    let r = headers.get(HeaderName::from_static("record-origin-type"));
-    if r.is_some() {
-        rec_origin_type = Some(String::from(r.unwrap().to_str().unwrap()));
+
+    let origin_name = headers.get(
+        HeaderName::from_static("record-origin-name")
+    );
+    if origin_name.is_some() {
+        rec_origin_name = Some(String::from(origin_name.unwrap().to_str().unwrap()));
     }
 
-    let rec_store = OssRecordStore::new(rec_origin_name, rec_origin_type, Some(bytes.to_vec()));
-    let rec_bin_vec = bincode::serialize(&rec_store).unwrap();
-    let rec_bin_md5 = md5::compute(rec_bin_vec.as_slice());
-    let r = state.read().await.db.as_ref().unwrap()
-        .get(ReadOptions::default(), rec_bin_md5.as_ref());
-    if r.is_err() {
+    let origin_type = headers.get(
+        HeaderName::from_static("record-origin-type")
+    );
+    if origin_type.is_some() {
+        rec_origin_type = Some(String::from(origin_type.unwrap().to_str().unwrap()));
+    }
+
+    let rec_store = OssRecordStore::new(
+        rec_origin_name,
+        rec_origin_type,
+        Some(bytes.to_vec()),
+    );
+    let rec_bin_vec = bincode::serialize(&rec_store)
+        .unwrap();
+    let rec_bin_md5 = md5::compute(&rec_bin_vec.as_slice());
+
+    let res_get = state
+        .read()
+        .await
+        .db
+        .as_ref()
+        .unwrap()
+        .get(
+            ReadOptions::default(),
+            &rec_bin_md5.as_ref(),
+        );
+
+    if res_get.is_err() {
         // get error
-        let resp_err = RespErr::new(-1,
-                                    Some(String::from("get error")));
-        let json_resp = serde_json::to_string(&resp_err).unwrap();
+        let resp_err = RespErr::new(
+            -1,
+            Some(String::from("get error")),
+        );
+        let json_resp = serde_json::to_string(&resp_err)
+            .unwrap();
+
         return Ok(Bytes::from(json_resp));
-    } else if r.unwrap().is_none() {
+    } else if res_get.unwrap().is_none() {
         // not found in store
-        let r = state.write().await.db.as_ref().unwrap()
-            .put(WriteOptions::default(), rec_bin_md5.as_ref(), rec_bin_vec.as_ref());
-        if r.is_err() {
+        let res_put = state
+            .write()
+            .await
+            .db
+            .as_ref()
+            .unwrap()
+            .put(
+                WriteOptions::default(),
+                &rec_bin_md5.as_ref(),
+                &rec_bin_vec.as_ref(),
+            );
+
+        if res_put.is_err() {
             // put error
-            let resp_err = RespErr::new(-1,
-                                        Some(String::from("put error")));
-            let json_resp = serde_json::to_string(&resp_err).unwrap();
+            let resp_err = RespErr::new(
+                -1,
+                Some(String::from("put error")),
+            );
+            let json_resp = serde_json::to_string(&resp_err)
+                .unwrap();
+
             return Ok(Bytes::from(json_resp));
         }
     }
-    let resp_ok = Resp::new(0,
-                            Some(format!("{:x}", rec_bin_md5).to_string()));
-    let json_resp = serde_json::to_string(&resp_ok).unwrap();
+
+    let resp_ok = Resp::new(
+        0,
+        Some(format!("{:x}", rec_bin_md5).to_string()),
+    );
+    let json_resp = serde_json::to_string(&resp_ok)
+        .unwrap();
+
     return Ok(Bytes::from(json_resp));
 }

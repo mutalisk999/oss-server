@@ -1,5 +1,4 @@
 use std::net::SocketAddr;
-
 use flexi_logger::{detailed_format, Duplicate};
 use log::info;
 use tokio::signal;
