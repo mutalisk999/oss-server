@@ -1,19 +1,22 @@
 use std::env;
 use std::sync::Arc;
+
 use axum::{Extension, Router};
-use axum::extract::{ContentLengthLimit, Path};
-use axum::http::{header::{HeaderMap, HeaderName, HeaderValue}, StatusCode};
+use axum::extract::{BodyStream, Path};
 use axum::routing::{get, post};
-use tokio::sync::RwLock;
-use wickdb::{BytewiseComparator, Options, WickDB, ReadOptions, DB, WriteOptions};
-use wickdb::file::FileStorage;
-use bytes::Bytes;
-use serde::{Deserialize, Serialize};
-use md5;
 use bincode;
+use bytes::Bytes;
+use hyper::body;
+use hyper::body::Body;
+use hyper::http::{HeaderMap, HeaderValue, StatusCode};
+use hyper::http::header::HeaderName;
+use md5;
+use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
+use wickdb::{BytewiseComparator, DB, Options, ReadOptions, WickDB, WriteOptions};
+use wickdb::file::FileStorage;
 
 use crate::controller::resp::{Resp, RespErr};
-
 
 pub type SharedState = Arc<RwLock<State>>;
 
@@ -142,15 +145,29 @@ async fn get_record_by_key(Path(key): Path<String>,
 
 
 async fn store_record(headers: HeaderMap,
-                      ContentLengthLimit(bytes): ContentLengthLimit<Bytes, { 100 * 1024 * 1024 }>,
+                      stream: BodyStream,
                       Extension(state): Extension<SharedState>) -> Result<Bytes, StatusCode> {
-    let mut rec_content_length = bytes.len();
+    let mut rec_content_length = 0usize;
+    let mut header_found = false;
+
     if let Some(content_length) = headers.get(HeaderName::from_static("content-length")) {
         if let Ok(content_length_str) = content_length.to_str() {
             if let Ok(content_length_usize) = content_length_str.parse::<usize>() {
-                rec_content_length = content_length_usize
+                rec_content_length = content_length_usize;
+                header_found = true;
             }
         }
+    }
+
+    if !header_found {
+        let resp_err = RespErr::new(
+            -1,
+            Some(String::from("not found valid header [content-length]")),
+        );
+        let json_resp = serde_json::to_string(&resp_err)
+            .unwrap();
+
+        return Ok(Bytes::from(json_resp));
     }
 
     if rec_content_length > 100 * 1024 * 1024 {
@@ -192,10 +209,27 @@ async fn store_record(headers: HeaderMap,
         rec_origin_type = Some(String::from(origin_type.unwrap().to_str().unwrap()));
     }
 
+    let mut bytes_resp = vec![];
+    match body::to_bytes(Body::wrap_stream(stream)).await {
+        Ok(v) => {
+            bytes_resp.extend_from_slice(v.to_vec().as_slice());
+        }
+        Err(err) => {
+            let resp_err = RespErr::new(
+                -1,
+                Some(format!("read body stream error: {}", err.to_string())),
+            );
+            let json_resp = serde_json::to_string(&resp_err)
+                .unwrap();
+
+            return Ok(Bytes::from(json_resp));
+        }
+    }
+
     let rec_store = OssRecordStore::new(
         rec_origin_name,
         rec_origin_type,
-        Some(bytes.to_vec()),
+        Some(bytes_resp),
     );
     let rec_bin_vec = bincode::serialize(&rec_store)
         .unwrap();
