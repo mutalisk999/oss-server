@@ -44,7 +44,7 @@ impl OssRecordStore {
 
 
 pub fn oss_routes() -> Router {
-    // new leveldb state
+    // new WickDB state
     let opt = Options::<BytewiseComparator>::default();
     let state = Arc::new(
         RwLock::new(
