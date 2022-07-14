@@ -15,6 +15,16 @@ impl<T> Resp<T> {
     }
 }
 
+pub fn resp_to_json<T>(code: i32, result: T) -> String
+    where T: Serialize
+{
+    let resp_ok = Resp::new(
+        code,
+        result,
+    );
+    serde_json::to_string(&resp_ok).unwrap()
+}
+
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct RespErr {
     pub code: i32,
@@ -28,4 +38,12 @@ impl RespErr {
             error: _error,
         }
     }
+}
+
+pub fn resp_err_to_json(code: i32, error: Option<String>) -> String {
+    let resp_err = RespErr::new(
+        code,
+        error,
+    );
+    serde_json::to_string(&resp_err).unwrap()
 }

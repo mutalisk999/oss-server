@@ -16,7 +16,7 @@ use tokio::sync::RwLock;
 use wickdb::{BytewiseComparator, DB, Options, ReadOptions, WickDB, WriteOptions};
 use wickdb::file::FileStorage;
 
-use crate::controller::resp::{Resp, RespErr};
+use crate::controller::resp::{resp_to_json, resp_err_to_json};
 
 pub type SharedState = Arc<RwLock<State>>;
 
@@ -73,14 +73,14 @@ async fn get_record_by_key(Path(key): Path<String>,
 
     if rec_bin_md5.is_err() {
         // invalid hex string
-        let resp_err = RespErr::new(
-            -1,
-            Some(String::from("invalid hex string [record key]")),
+        return Ok(
+            (headers, Bytes::from(
+                resp_err_to_json(
+                    -1,
+                    Some(String::from("invalid hex string [record key]")),
+                )
+            ))
         );
-        let json_resp = serde_json::to_string(&resp_err)
-            .unwrap();
-
-        return Ok((headers, Bytes::from(json_resp)));
     }
 
     let rec_bin_vec = state.read()
@@ -96,27 +96,27 @@ async fn get_record_by_key(Path(key): Path<String>,
     if rec_bin_vec
         .is_err() {
         // get error
-        let resp_err = RespErr::new(
-            -1,
-            Some(String::from("get error [record key]")),
+        return Ok(
+            (headers, Bytes::from(
+                resp_err_to_json(
+                    -1,
+                    Some(String::from("get error [record key]")),
+                )
+            ))
         );
-        let json_resp = serde_json::to_string(&resp_err)
-            .unwrap();
-
-        return Ok((headers, Bytes::from(json_resp)));
     } else if rec_bin_vec
         .as_ref()
         .unwrap()
         .is_none() {
         // not found in store
-        let resp_err = RespErr::new(
-            -1,
-            Some(String::from("not found [record key]")),
+        return Ok(
+            (headers, Bytes::from(
+                resp_err_to_json(
+                    -1,
+                    Some(String::from("not found [record key]")),
+                )
+            ))
         );
-        let json_resp = serde_json::to_string(&resp_err)
-            .unwrap();
-
-        return Ok((headers, Bytes::from(json_resp)));
     }
 
     let record_store: OssRecordStore = bincode::deserialize(
@@ -140,7 +140,12 @@ async fn get_record_by_key(Path(key): Path<String>,
             .unwrap_or(String::default()).as_str())
             .unwrap(),
     );
-    return Ok((headers, Bytes::from(record_store.content_data.unwrap())));
+
+    return Ok(
+        (headers, Bytes::from(
+            record_store.content_data.unwrap()
+        ))
+    );
 }
 
 
@@ -160,36 +165,37 @@ async fn store_record(headers: HeaderMap,
     }
 
     if !header_found {
-        let resp_err = RespErr::new(
-            -1,
-            Some(String::from("not found valid header [content-length]")),
+        // not found valid header
+        return Ok(
+            Bytes::from(
+                resp_err_to_json(
+                    -1,
+                    Some(String::from("not found valid header [content-length]")),
+                )
+            )
         );
-        let json_resp = serde_json::to_string(&resp_err)
-            .unwrap();
-
-        return Ok(Bytes::from(json_resp));
     }
 
     if rec_content_length > 100 * 1024 * 1024 {
         // size too big
-        let resp_err = RespErr::new(
-            -1,
-            Some(String::from("invalid stored record [size is too big]")),
+        return Ok(
+            Bytes::from(
+                resp_err_to_json(
+                    -1,
+                    Some(String::from("invalid stored record [size is too big]")),
+                )
+            )
         );
-        let json_resp = serde_json::to_string(&resp_err)
-            .unwrap();
-
-        return Ok(Bytes::from(json_resp));
     } else if rec_content_length == 0 {
         // size too small
-        let resp_err = RespErr::new(
-            -1,
-            Some(String::from("invalid stored record [size is too small]")),
+        return Ok(
+            Bytes::from(
+                resp_err_to_json(
+                    -1,
+                    Some(String::from("invalid stored record [size is too small]")),
+                )
+            )
         );
-        let json_resp = serde_json::to_string(&resp_err)
-            .unwrap();
-
-        return Ok(Bytes::from(json_resp));
     }
 
     let mut rec_origin_name: Option<String> = None;
@@ -215,14 +221,16 @@ async fn store_record(headers: HeaderMap,
             bytes_resp.extend_from_slice(v.to_vec().as_slice());
         }
         Err(err) => {
-            let resp_err = RespErr::new(
-                -1,
-                Some(format!("read body stream error: {}", err.to_string())),
+            // read body stream error
+            return Ok(
+                Bytes::from(
+                    resp_err_to_json(
+                        -1,
+                        Some(format!("read body stream error: {}", err.to_string())
+                        ),
+                    )
+                )
             );
-            let json_resp = serde_json::to_string(&resp_err)
-                .unwrap();
-
-            return Ok(Bytes::from(json_resp));
         }
     }
 
@@ -248,14 +256,14 @@ async fn store_record(headers: HeaderMap,
 
     if res_get.is_err() {
         // get error
-        let resp_err = RespErr::new(
-            -1,
-            Some(String::from("get error")),
+        return Ok(
+            Bytes::from(
+                resp_err_to_json(
+                    -1,
+                    Some(String::from("get error")),
+                )
+            )
         );
-        let json_resp = serde_json::to_string(&resp_err)
-            .unwrap();
-
-        return Ok(Bytes::from(json_resp));
     } else if res_get.unwrap().is_none() {
         // not found in store
         let res_put = state
@@ -272,23 +280,22 @@ async fn store_record(headers: HeaderMap,
 
         if res_put.is_err() {
             // put error
-            let resp_err = RespErr::new(
-                -1,
-                Some(String::from("put error")),
+            return Ok(
+                Bytes::from(
+                    resp_err_to_json(
+                        -1,
+                        Some(String::from("put error")))
+                )
             );
-            let json_resp = serde_json::to_string(&resp_err)
-                .unwrap();
-
-            return Ok(Bytes::from(json_resp));
         }
     }
 
-    let resp_ok = Resp::new(
-        0,
-        Some(format!("{:x}", rec_bin_md5).to_string()),
+    return Ok(
+        Bytes::from(
+            resp_to_json(
+                0,
+                Some(format!("{:x}", rec_bin_md5).to_string()),
+            )
+        )
     );
-    let json_resp = serde_json::to_string(&resp_ok)
-        .unwrap();
-
-    return Ok(Bytes::from(json_resp));
 }
