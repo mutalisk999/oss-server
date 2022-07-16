@@ -11,6 +11,7 @@ use hyper::body;
 use hyper::body::Body;
 use hyper::http::{HeaderMap, HeaderValue};
 use hyper::http::header::HeaderName;
+use hyper::http::StatusCode;
 use md5;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -71,7 +72,10 @@ async fn get_record_by_key(Path(key): Path<String>,
 
     if rec_bin_md5.is_err() {
         // invalid hex string
-        return Err(RespErr::new(-1, Some(String::from("invalid hex string [record key]"))));
+        return (
+            StatusCode::BAD_REQUEST,
+            Err(RespErr::new(-1, Some(String::from("invalid hex string [record key]"))))
+        );
     }
 
     let rec_bin_vec = state.read()
@@ -87,13 +91,19 @@ async fn get_record_by_key(Path(key): Path<String>,
     if rec_bin_vec
         .is_err() {
         // get error
-        return Err(RespErr::new(-1, Some(String::from("get error [record key]"))));
+        return (
+            StatusCode::BAD_REQUEST,
+            Err(RespErr::new(-1, Some(String::from("get error [record key]"))))
+        );
     } else if rec_bin_vec
         .as_ref()
         .unwrap()
         .is_none() {
         // not found in store
-        return Err(RespErr::new(-1, Some(String::from("not found [record key]"))));
+        return (
+            StatusCode::BAD_REQUEST,
+            Err(RespErr::new(-1, Some(String::from("not found [record key]"))))
+        );
     }
 
     let record_store: OssRecordStore = bincode::deserialize(
@@ -118,7 +128,10 @@ async fn get_record_by_key(Path(key): Path<String>,
             .unwrap(),
     );
 
-    return Ok((headers, Bytes::from(record_store.content_data.unwrap())));
+    return (
+        StatusCode::OK,
+        Ok((headers, Bytes::from(record_store.content_data.unwrap())))
+    );
 }
 
 async fn store_record(headers: HeaderMap,
@@ -138,15 +151,24 @@ async fn store_record(headers: HeaderMap,
 
     if !header_found {
         // not found valid header
-        return Err(RespErr::new(-1, Some(String::from("not found valid header [content-length]"))));
+        return (
+            StatusCode::BAD_REQUEST,
+            Err(RespErr::new(-1, Some(String::from("not found valid header [content-length]"))))
+        );
     }
 
     if rec_content_length > 100 * 1024 * 1024 {
         // size too big
-        return Err(RespErr::new(-1, Some(String::from("invalid stored record [size is too big]"))));
+        return (
+            StatusCode::BAD_REQUEST,
+            Err(RespErr::new(-1, Some(String::from("invalid stored record [size is too big]"))))
+        );
     } else if rec_content_length == 0 {
         // size too small
-        return Err(RespErr::new(-1, Some(String::from("invalid stored record [size is too small]"))));
+        return (
+            StatusCode::BAD_REQUEST,
+            Err(RespErr::new(-1, Some(String::from("invalid stored record [size is too small]"))))
+        );
     }
 
     let mut rec_origin_name: Option<String> = None;
@@ -173,7 +195,10 @@ async fn store_record(headers: HeaderMap,
         }
         Err(err) => {
             // read body stream error
-            return Err(RespErr::new(-1, Some(format!("read body stream error: {}", err.to_string()))));
+            return (
+                StatusCode::BAD_REQUEST,
+                Err(RespErr::new(-1, Some(format!("read body stream error: {}", err.to_string()))))
+            );
         }
     }
 
@@ -199,7 +224,10 @@ async fn store_record(headers: HeaderMap,
 
     if res_get.is_err() {
         // get error
-        return Err(RespErr::new(-1, Some(String::from("get error"))));
+        return (
+            StatusCode::BAD_REQUEST,
+            Err(RespErr::new(-1, Some(String::from("get error"))))
+        );
     } else if res_get.unwrap().is_none() {
         // not found in store
         let res_put = state
@@ -216,11 +244,17 @@ async fn store_record(headers: HeaderMap,
 
         if res_put.is_err() {
             // put error
-            return Err(RespErr::new(-1, Some(String::from("put error"))));
+            return (
+                StatusCode::BAD_REQUEST,
+                Err(RespErr::new(-1, Some(String::from("put error"))))
+            );
         }
     }
 
-    return Ok(Resp::new(0, Some(format!("{:x}", rec_bin_md5).to_string())));
+    return (
+        StatusCode::OK,
+        Ok(Resp::new(0, Some(format!("{:x}", rec_bin_md5).to_string())))
+    );
 }
 
 impl IntoResponse for RespErr {
