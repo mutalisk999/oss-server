@@ -7,6 +7,7 @@ edition = "2018"
 
 [dependencies]
 axum = "0.5.11"
+axum-core = "0.2.7"
 tokio = { version = "1.15.0", features = ["full"] }
 tokio-util = "0.7.3"
 tower = { version = "0.4", features = ["util", "timeout", "load-shed", "limit"] }
@@ -23,4 +24,3 @@ bytes = "1.1.0"
 md5 = "0.7.0"
 hex = "0.4.3"
 bincode = "1.3.3"
-futures = "0.3.21"

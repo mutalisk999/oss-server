@@ -4,11 +4,12 @@ use std::sync::Arc;
 use axum::{Extension, Router};
 use axum::extract::{BodyStream, Path};
 use axum::routing::{get, post};
+use axum_core::response::{IntoResponse, Response};
 use bincode;
 use bytes::Bytes;
 use hyper::body;
 use hyper::body::Body;
-use hyper::http::{HeaderMap, HeaderValue, StatusCode};
+use hyper::http::{HeaderMap, HeaderValue};
 use hyper::http::header::HeaderName;
 use md5;
 use serde::{Deserialize, Serialize};
@@ -16,14 +17,13 @@ use tokio::sync::RwLock;
 use wickdb::{BytewiseComparator, DB, Options, ReadOptions, WickDB, WriteOptions};
 use wickdb::file::FileStorage;
 
-use crate::controller::resp::{resp_to_json, resp_err_to_json};
+use crate::controller::resp::{Resp, RespErr};
 
 pub type SharedState = Arc<RwLock<State>>;
 
 pub struct State {
     pub db: Option<wickdb::WickDB<FileStorage, BytewiseComparator>>
 }
-
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 struct OssRecordStore {
@@ -41,7 +41,6 @@ impl OssRecordStore {
         }
     }
 }
-
 
 pub fn oss_routes() -> Router {
     // new WickDB state
@@ -65,22 +64,14 @@ pub fn oss_routes() -> Router {
         .layer(Extension(state))
 }
 
-
 async fn get_record_by_key(Path(key): Path<String>,
-                           Extension(state): Extension<SharedState>) -> Result<(HeaderMap, Bytes), StatusCode> {
+                           Extension(state): Extension<SharedState>) -> impl IntoResponse {
     let mut headers = HeaderMap::new();
     let rec_bin_md5 = hex::decode(&key.as_str());
 
     if rec_bin_md5.is_err() {
         // invalid hex string
-        return Ok(
-            (headers, Bytes::from(
-                resp_err_to_json(
-                    -1,
-                    Some(String::from("invalid hex string [record key]")),
-                )
-            ))
-        );
+        return Err(RespErr::new(-1, Some(String::from("invalid hex string [record key]"))));
     }
 
     let rec_bin_vec = state.read()
@@ -96,27 +87,13 @@ async fn get_record_by_key(Path(key): Path<String>,
     if rec_bin_vec
         .is_err() {
         // get error
-        return Ok(
-            (headers, Bytes::from(
-                resp_err_to_json(
-                    -1,
-                    Some(String::from("get error [record key]")),
-                )
-            ))
-        );
+        return Err(RespErr::new(-1, Some(String::from("get error [record key]"))));
     } else if rec_bin_vec
         .as_ref()
         .unwrap()
         .is_none() {
         // not found in store
-        return Ok(
-            (headers, Bytes::from(
-                resp_err_to_json(
-                    -1,
-                    Some(String::from("not found [record key]")),
-                )
-            ))
-        );
+        return Err(RespErr::new(-1, Some(String::from("not found [record key]"))));
     }
 
     let record_store: OssRecordStore = bincode::deserialize(
@@ -141,17 +118,12 @@ async fn get_record_by_key(Path(key): Path<String>,
             .unwrap(),
     );
 
-    return Ok(
-        (headers, Bytes::from(
-            record_store.content_data.unwrap()
-        ))
-    );
+    return Ok((headers, Bytes::from(record_store.content_data.unwrap())));
 }
-
 
 async fn store_record(headers: HeaderMap,
                       stream: BodyStream,
-                      Extension(state): Extension<SharedState>) -> Result<Bytes, StatusCode> {
+                      Extension(state): Extension<SharedState>) -> impl IntoResponse {
     let mut rec_content_length = 0usize;
     let mut header_found = false;
 
@@ -166,36 +138,15 @@ async fn store_record(headers: HeaderMap,
 
     if !header_found {
         // not found valid header
-        return Ok(
-            Bytes::from(
-                resp_err_to_json(
-                    -1,
-                    Some(String::from("not found valid header [content-length]")),
-                )
-            )
-        );
+        return Err(RespErr::new(-1, Some(String::from("not found valid header [content-length]"))));
     }
 
     if rec_content_length > 100 * 1024 * 1024 {
         // size too big
-        return Ok(
-            Bytes::from(
-                resp_err_to_json(
-                    -1,
-                    Some(String::from("invalid stored record [size is too big]")),
-                )
-            )
-        );
+        return Err(RespErr::new(-1, Some(String::from("invalid stored record [size is too big]"))));
     } else if rec_content_length == 0 {
         // size too small
-        return Ok(
-            Bytes::from(
-                resp_err_to_json(
-                    -1,
-                    Some(String::from("invalid stored record [size is too small]")),
-                )
-            )
-        );
+        return Err(RespErr::new(-1, Some(String::from("invalid stored record [size is too small]"))));
     }
 
     let mut rec_origin_name: Option<String> = None;
@@ -222,15 +173,7 @@ async fn store_record(headers: HeaderMap,
         }
         Err(err) => {
             // read body stream error
-            return Ok(
-                Bytes::from(
-                    resp_err_to_json(
-                        -1,
-                        Some(format!("read body stream error: {}", err.to_string())
-                        ),
-                    )
-                )
-            );
+            return Err(RespErr::new(-1, Some(format!("read body stream error: {}", err.to_string()))));
         }
     }
 
@@ -256,14 +199,7 @@ async fn store_record(headers: HeaderMap,
 
     if res_get.is_err() {
         // get error
-        return Ok(
-            Bytes::from(
-                resp_err_to_json(
-                    -1,
-                    Some(String::from("get error")),
-                )
-            )
-        );
+        return Err(RespErr::new(-1, Some(String::from("get error"))));
     } else if res_get.unwrap().is_none() {
         // not found in store
         let res_put = state
@@ -280,22 +216,29 @@ async fn store_record(headers: HeaderMap,
 
         if res_put.is_err() {
             // put error
-            return Ok(
-                Bytes::from(
-                    resp_err_to_json(
-                        -1,
-                        Some(String::from("put error")))
-                )
-            );
+            return Err(RespErr::new(-1, Some(String::from("put error"))));
         }
     }
 
-    return Ok(
-        Bytes::from(
-            resp_to_json(
-                0,
-                Some(format!("{:x}", rec_bin_md5).to_string()),
-            )
-        )
-    );
+    return Ok(Resp::new(0, Some(format!("{:x}", rec_bin_md5).to_string())));
+}
+
+impl IntoResponse for RespErr {
+    fn into_response(self) -> Response {
+        let resp_err = RespErr::new(
+            self.code,
+            self.error,
+        );
+        serde_json::to_string(&resp_err).unwrap().into_response()
+    }
+}
+
+impl IntoResponse for Resp<Option<String>> {
+    fn into_response(self) -> Response {
+        let resp_ok = Resp::new(
+            self.code,
+            self.result,
+        );
+        serde_json::to_string(&resp_ok).unwrap().into_response()
+    }
 }

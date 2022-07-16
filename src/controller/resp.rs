@@ -1,4 +1,8 @@
-use serde::{Serialize, Deserialize};
+use std::error::Error;
+use std::fmt::{Display, Result};
+
+use serde::{Deserialize, Serialize};
+use serde::__private::Formatter;
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct Resp<T> {
@@ -15,21 +19,23 @@ impl<T> Resp<T> {
     }
 }
 
-pub fn resp_to_json<T>(code: i32, result: T) -> String
-    where T: Serialize
-{
-    let resp_ok = Resp::new(
-        code,
-        result,
-    );
-    serde_json::to_string(&resp_ok).unwrap()
-}
-
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct RespErr {
     pub code: i32,
     pub error: Option<String>,
 }
+
+impl Display for RespErr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        if let Some(err_str) = self.error.clone() {
+            write!(f, "RespErr: code = {}, error = {}", self.code, err_str)
+        } else {
+            write!(f, "RespErr: code = {}, error = None", self.code)
+        }
+    }
+}
+
+impl Error for RespErr {}
 
 impl RespErr {
     pub fn new(_code: i32, _error: Option<String>) -> Self {
@@ -38,12 +44,4 @@ impl RespErr {
             error: _error,
         }
     }
-}
-
-pub fn resp_err_to_json(code: i32, error: Option<String>) -> String {
-    let resp_err = RespErr::new(
-        code,
-        error,
-    );
-    serde_json::to_string(&resp_err).unwrap()
 }
