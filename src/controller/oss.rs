@@ -1,7 +1,7 @@
 use std::env;
 use std::sync::Arc;
 
-use axum::{Extension, Router};
+use axum::{Extension, Json, Router};
 use axum::extract::{BodyStream, Path};
 use axum::routing::{get, post};
 use axum_core::response::{IntoResponse, Response};
@@ -12,13 +12,13 @@ use hyper::body::Body;
 use hyper::http::{HeaderMap, HeaderValue};
 use hyper::http::header::HeaderName;
 use hyper::http::StatusCode;
+use log::warn;
 use md5;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tokio::sync::RwLock;
 use wickdb::{BytewiseComparator, DB, Options, ReadOptions, WickDB, WriteOptions};
 use wickdb::file::FileStorage;
-
-use crate::controller::resp::{Resp, RespErr};
 
 pub type SharedState = Arc<RwLock<State>>;
 
@@ -66,16 +66,14 @@ pub fn oss_routes() -> Router {
 }
 
 async fn get_record_by_key(Path(key): Path<String>,
-                           Extension(state): Extension<SharedState>) -> impl IntoResponse {
+                           Extension(state): Extension<SharedState>) -> Result<(HeaderMap, Bytes), OssError> {
     let mut headers = HeaderMap::new();
     let rec_bin_md5 = hex::decode(&key.as_str());
 
     if rec_bin_md5.is_err() {
         // invalid hex string
-        return (
-            StatusCode::BAD_REQUEST,
-            Err(RespErr::new(-1, Some(String::from("invalid hex string [record key]"))))
-        );
+        warn!("Invalid hex string [record key]");
+        return Err(OssError::InvalidRecordKey);
     }
 
     let rec_bin_vec = state.read()
@@ -91,19 +89,15 @@ async fn get_record_by_key(Path(key): Path<String>,
     if rec_bin_vec
         .is_err() {
         // get error
-        return (
-            StatusCode::BAD_REQUEST,
-            Err(RespErr::new(-1, Some(String::from("get error [record key]"))))
-        );
+        warn!("Get error [record key]");
+        return Err(OssError::StoreGetError);
     } else if rec_bin_vec
         .as_ref()
         .unwrap()
         .is_none() {
         // not found in store
-        return (
-            StatusCode::BAD_REQUEST,
-            Err(RespErr::new(-1, Some(String::from("not found [record key]"))))
-        );
+        warn!("Not found [record key]");
+        return Err(OssError::StoreGetNotFound);
     }
 
     let record_store: OssRecordStore = bincode::deserialize(
@@ -128,15 +122,12 @@ async fn get_record_by_key(Path(key): Path<String>,
             .unwrap(),
     );
 
-    return (
-        StatusCode::OK,
-        Ok((headers, Bytes::from(record_store.content_data.unwrap())))
-    );
+    return Ok((headers, Bytes::from(record_store.content_data.unwrap())));
 }
 
 async fn store_record(headers: HeaderMap,
                       stream: BodyStream,
-                      Extension(state): Extension<SharedState>) -> impl IntoResponse {
+                      Extension(state): Extension<SharedState>) -> Result<Bytes, OssError> {
     let mut rec_content_length = 0usize;
     let mut header_found = false;
 
@@ -151,24 +142,18 @@ async fn store_record(headers: HeaderMap,
 
     if !header_found {
         // not found valid header
-        return (
-            StatusCode::BAD_REQUEST,
-            Err(RespErr::new(-1, Some(String::from("not found valid header [content-length]"))))
-        );
+        warn!("Not found valid header [content-length]");
+        return Err(OssError::HttpHeaderNotFound);
     }
 
     if rec_content_length > 100 * 1024 * 1024 {
         // size too big
-        return (
-            StatusCode::BAD_REQUEST,
-            Err(RespErr::new(-1, Some(String::from("invalid stored record [size is too big]"))))
-        );
+        warn!("Invalid stored record [size is too big]");
+        return Err(OssError::RecordTooBig);
     } else if rec_content_length == 0 {
         // size too small
-        return (
-            StatusCode::BAD_REQUEST,
-            Err(RespErr::new(-1, Some(String::from("invalid stored record [size is too small]"))))
-        );
+        warn!("Invalid stored record [size is too small]");
+        return Err(OssError::RecordTooSmall);
     }
 
     let mut rec_origin_name: Option<String> = None;
@@ -195,10 +180,8 @@ async fn store_record(headers: HeaderMap,
         }
         Err(err) => {
             // read body stream error
-            return (
-                StatusCode::BAD_REQUEST,
-                Err(RespErr::new(-1, Some(format!("read body stream error: {}", err.to_string()))))
-            );
+            warn!("Read body stream error: {}", err.to_string());
+            return Err(OssError::HttpBodyReadError);
         }
     }
 
@@ -224,10 +207,8 @@ async fn store_record(headers: HeaderMap,
 
     if res_get.is_err() {
         // get error
-        return (
-            StatusCode::BAD_REQUEST,
-            Err(RespErr::new(-1, Some(String::from("get error"))))
-        );
+        warn!("Get error");
+        return Err(OssError::StoreGetError);
     } else if res_get.unwrap().is_none() {
         // not found in store
         let res_put = state
@@ -244,35 +225,45 @@ async fn store_record(headers: HeaderMap,
 
         if res_put.is_err() {
             // put error
-            return (
-                StatusCode::BAD_REQUEST,
-                Err(RespErr::new(-1, Some(String::from("put error"))))
-            );
+            warn!("Put error");
+            return Err(OssError::StorePutError);
         }
     }
 
-    return (
-        StatusCode::OK,
-        Ok(Resp::new(0, Some(format!("{:x}", rec_bin_md5).to_string())))
-    );
+    return Ok(Bytes::from(
+        Json(json!({
+            "result": format!("{:x}", rec_bin_md5).to_string(),
+        })).to_string()
+    ));
 }
 
-impl IntoResponse for RespErr {
+impl IntoResponse for OssError {
     fn into_response(self) -> Response {
-        let resp_err = RespErr::new(
-            self.code,
-            self.error,
-        );
-        serde_json::to_string(&resp_err).unwrap().into_response()
+        let (status, error_message) = match self {
+            OssError::InvalidRecordKey => (StatusCode::BAD_REQUEST, "Invalid hex string [record key]"),
+            OssError::StoreGetError => (StatusCode::INTERNAL_SERVER_ERROR, "Get error [record key]"),
+            OssError::StorePutError => (StatusCode::INTERNAL_SERVER_ERROR, "Put error [record"),
+            OssError::StoreGetNotFound => (StatusCode::BAD_REQUEST, "Not found [record key]"),
+            OssError::HttpHeaderNotFound => (StatusCode::BAD_REQUEST, "Not found valid header [content-length]"),
+            OssError::RecordTooBig => (StatusCode::BAD_REQUEST, "Invalid stored record [size is too big]"),
+            OssError::RecordTooSmall => (StatusCode::BAD_REQUEST, "Invalid stored record [size is too small]"),
+            OssError::HttpBodyReadError => (StatusCode::INTERNAL_SERVER_ERROR, "Read body stream error"),
+        };
+        let body = Json(json!({
+            "error": error_message,
+        }));
+        (status, body).into_response()
     }
 }
 
-impl IntoResponse for Resp<Option<String>> {
-    fn into_response(self) -> Response {
-        let resp_ok = Resp::new(
-            self.code,
-            self.result,
-        );
-        serde_json::to_string(&resp_ok).unwrap().into_response()
-    }
+#[derive(Debug)]
+enum OssError {
+    InvalidRecordKey,
+    StoreGetError,
+    StorePutError,
+    StoreGetNotFound,
+    HttpHeaderNotFound,
+    RecordTooBig,
+    RecordTooSmall,
+    HttpBodyReadError,
 }
