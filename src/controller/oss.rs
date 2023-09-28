@@ -1,29 +1,29 @@
 use std::env;
 use std::sync::Arc;
 
-use axum::{Extension, Json, Router};
 use axum::extract::{BodyStream, Path};
 use axum::routing::{get, post};
+use axum::{Extension, Json, Router};
 use axum_core::response::{IntoResponse, Response};
 use bincode;
 use bytes::Bytes;
 use hyper::body;
 use hyper::body::Body;
-use hyper::http::{HeaderMap, HeaderValue};
 use hyper::http::header::HeaderName;
 use hyper::http::StatusCode;
+use hyper::http::{HeaderMap, HeaderValue};
 use log::warn;
 use md5;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::RwLock;
-use wickdb::{BytewiseComparator, DB, Options, ReadOptions, WickDB, WriteOptions};
 use wickdb::file::FileStorage;
+use wickdb::{BytewiseComparator, Options, ReadOptions, WickDB, WriteOptions, DB};
 
 pub type SharedState = Arc<RwLock<State>>;
 
 pub struct State {
-    pub db: Option<wickdb::WickDB<FileStorage, BytewiseComparator>>
+    pub db: Option<wickdb::WickDB<FileStorage, BytewiseComparator>>,
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
@@ -46,18 +46,16 @@ impl OssRecordStore {
 pub fn oss_routes() -> Router {
     // new WickDB state
     let opt = Options::<BytewiseComparator>::default();
-    let state = Arc::new(
-        RwLock::new(
-            State {
-                db: Option::from(
-                    WickDB::open_db(
-                        opt,
-                        env::var("OSS_STORE_DIR").unwrap_or(String::from("oss_store")),
-                        FileStorage::default(),
-                    ).unwrap()),
-            }
-        )
-    );
+    let state = Arc::new(RwLock::new(State {
+        db: Option::from(
+            WickDB::open_db(
+                opt,
+                env::var("OSS_STORE_DIR").unwrap_or(String::from("oss_store")),
+                FileStorage::default(),
+            )
+            .unwrap(),
+        ),
+    }));
 
     Router::new()
         .route("/record/:key", get(get_record_by_key))
@@ -65,8 +63,10 @@ pub fn oss_routes() -> Router {
         .layer(Extension(state))
 }
 
-async fn get_record_by_key(Path(key): Path<String>,
-                           Extension(state): Extension<SharedState>) -> Result<(HeaderMap, Bytes), OssError> {
+async fn get_record_by_key(
+    Path(key): Path<String>,
+    Extension(state): Extension<SharedState>,
+) -> Result<(HeaderMap, Bytes), OssError> {
     let mut headers = HeaderMap::new();
     let rec_bin_md5 = hex::decode(&key.as_str());
 
@@ -76,58 +76,56 @@ async fn get_record_by_key(Path(key): Path<String>,
         return Err(OssError::InvalidRecordKey);
     }
 
-    let rec_bin_vec = state.read()
+    let rec_bin_vec = state
+        .read()
         .await
         .db
         .as_ref()
         .unwrap()
-        .get(
-            ReadOptions::default(),
-            &rec_bin_md5.unwrap().as_slice(),
-        );
+        .get(ReadOptions::default(), &rec_bin_md5.unwrap().as_slice());
 
-    if rec_bin_vec
-        .is_err() {
+    if rec_bin_vec.is_err() {
         // get error
         warn!("Get error [record key]");
         return Err(OssError::StoreGetError);
-    } else if rec_bin_vec
-        .as_ref()
-        .unwrap()
-        .is_none() {
+    } else if rec_bin_vec.as_ref().unwrap().is_none() {
         // not found in store
         warn!("Not found [record key]");
         return Err(OssError::StoreGetNotFound);
     }
 
-    let record_store: OssRecordStore = bincode::deserialize(
-        &rec_bin_vec
-            .unwrap()
-            .unwrap()
-            .as_slice()
-    ).unwrap();
+    let record_store: OssRecordStore =
+        bincode::deserialize(&rec_bin_vec.unwrap().unwrap().as_slice()).unwrap();
 
     headers.insert(
         HeaderName::from_static("record-origin-name"),
-        HeaderValue::from_str(&record_store
-            .origin_name
-            .unwrap_or(String::default()).as_str())
-            .unwrap(),
+        HeaderValue::from_str(
+            &record_store
+                .origin_name
+                .unwrap_or(String::default())
+                .as_str(),
+        )
+        .unwrap(),
     );
     headers.insert(
         HeaderName::from_static("record-origin-type"),
-        HeaderValue::from_str(&record_store
-            .origin_type
-            .unwrap_or(String::default()).as_str())
-            .unwrap(),
+        HeaderValue::from_str(
+            &record_store
+                .origin_type
+                .unwrap_or(String::default())
+                .as_str(),
+        )
+        .unwrap(),
     );
 
     return Ok((headers, Bytes::from(record_store.content_data.unwrap())));
 }
 
-async fn store_record(headers: HeaderMap,
-                      stream: BodyStream,
-                      Extension(state): Extension<SharedState>) -> Result<Bytes, OssError> {
+async fn store_record(
+    headers: HeaderMap,
+    stream: BodyStream,
+    Extension(state): Extension<SharedState>,
+) -> Result<Bytes, OssError> {
     let mut rec_content_length = 0usize;
     let mut header_found = false;
 
@@ -159,16 +157,12 @@ async fn store_record(headers: HeaderMap,
     let mut rec_origin_name: Option<String> = None;
     let mut rec_origin_type: Option<String> = None;
 
-    let origin_name = headers.get(
-        HeaderName::from_static("record-origin-name")
-    );
+    let origin_name = headers.get(HeaderName::from_static("record-origin-name"));
     if origin_name.is_some() {
         rec_origin_name = Some(String::from(origin_name.unwrap().to_str().unwrap()));
     }
 
-    let origin_type = headers.get(
-        HeaderName::from_static("record-origin-type")
-    );
+    let origin_type = headers.get(HeaderName::from_static("record-origin-type"));
     if origin_type.is_some() {
         rec_origin_type = Some(String::from(origin_type.unwrap().to_str().unwrap()));
     }
@@ -185,13 +179,8 @@ async fn store_record(headers: HeaderMap,
         }
     }
 
-    let rec_store = OssRecordStore::new(
-        rec_origin_name,
-        rec_origin_type,
-        Some(bytes_resp),
-    );
-    let rec_bin_vec = bincode::serialize(&rec_store)
-        .unwrap();
+    let rec_store = OssRecordStore::new(rec_origin_name, rec_origin_type, Some(bytes_resp));
+    let rec_bin_vec = bincode::serialize(&rec_store).unwrap();
     let rec_bin_md5 = md5::compute(&rec_bin_vec.as_slice());
 
     let res_get = state
@@ -200,10 +189,7 @@ async fn store_record(headers: HeaderMap,
         .db
         .as_ref()
         .unwrap()
-        .get(
-            ReadOptions::default(),
-            &rec_bin_md5.as_ref(),
-        );
+        .get(ReadOptions::default(), &rec_bin_md5.as_ref());
 
     if res_get.is_err() {
         // get error
@@ -211,17 +197,11 @@ async fn store_record(headers: HeaderMap,
         return Err(OssError::StoreGetError);
     } else if res_get.unwrap().is_none() {
         // not found in store
-        let res_put = state
-            .write()
-            .await
-            .db
-            .as_ref()
-            .unwrap()
-            .put(
-                WriteOptions::default(),
-                &rec_bin_md5.as_ref(),
-                &rec_bin_vec.as_ref(),
-            );
+        let res_put = state.write().await.db.as_ref().unwrap().put(
+            WriteOptions::default(),
+            &rec_bin_md5.as_ref(),
+            &rec_bin_vec.as_ref(),
+        );
 
         if res_put.is_err() {
             // put error
@@ -233,21 +213,37 @@ async fn store_record(headers: HeaderMap,
     return Ok(Bytes::from(
         Json(json!({
             "result": format!("{:x}", rec_bin_md5).to_string(),
-        })).to_string()
+        }))
+        .to_string(),
     ));
 }
 
 impl IntoResponse for OssError {
     fn into_response(self) -> Response {
         let (status, error_message) = match self {
-            OssError::InvalidRecordKey => (StatusCode::BAD_REQUEST, "Invalid hex string [record key]"),
-            OssError::StoreGetError => (StatusCode::INTERNAL_SERVER_ERROR, "Get error [record key]"),
+            OssError::InvalidRecordKey => {
+                (StatusCode::BAD_REQUEST, "Invalid hex string [record key]")
+            }
+            OssError::StoreGetError => {
+                (StatusCode::INTERNAL_SERVER_ERROR, "Get error [record key]")
+            }
             OssError::StorePutError => (StatusCode::INTERNAL_SERVER_ERROR, "Put error [record"),
             OssError::StoreGetNotFound => (StatusCode::BAD_REQUEST, "Not found [record key]"),
-            OssError::HttpHeaderNotFound => (StatusCode::BAD_REQUEST, "Not found valid header [content-length]"),
-            OssError::RecordTooBig => (StatusCode::BAD_REQUEST, "Invalid stored record [size is too big]"),
-            OssError::RecordTooSmall => (StatusCode::BAD_REQUEST, "Invalid stored record [size is too small]"),
-            OssError::HttpBodyReadError => (StatusCode::INTERNAL_SERVER_ERROR, "Read body stream error"),
+            OssError::HttpHeaderNotFound => (
+                StatusCode::BAD_REQUEST,
+                "Not found valid header [content-length]",
+            ),
+            OssError::RecordTooBig => (
+                StatusCode::BAD_REQUEST,
+                "Invalid stored record [size is too big]",
+            ),
+            OssError::RecordTooSmall => (
+                StatusCode::BAD_REQUEST,
+                "Invalid stored record [size is too small]",
+            ),
+            OssError::HttpBodyReadError => {
+                (StatusCode::INTERNAL_SERVER_ERROR, "Read body stream error")
+            }
         };
         let body = Json(json!({
             "error": error_message,
